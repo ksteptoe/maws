@@ -18,11 +18,19 @@ VENV := .venv
 # Pick a system Python: use 'python' if present, else Windows launcher 'py -3'
 PYTHON_SYS := $(shell command -v python >/dev/null 2>&1 && echo python || echo py -3)
 
-ifeq ($(OS),Windows_NT)
-PY := $(VENV)/Scripts/python
-else
-PY := $(VENV)/bin/python
-endif
+# IMPORTANT:
+# On Windows under Git Bash/MSYS, `python -m venv` may create a POSIX-style venv:
+#   .venv/bin/python
+# rather than:
+#   .venv/Scripts/python.exe
+#
+# So we detect the venv python *at recipe execution time* (recursive variable).
+PY = $(shell \
+  for p in "$(VENV)/Scripts/python.exe" "$(VENV)/Scripts/python" "$(VENV)/bin/python"; do \
+    [ -f "$$p" ] && echo "$$p" && exit 0; \
+  done; \
+  echo "$(VENV)/bin/python" \
+)
 
 # Main code package (templated)
 PKG        := maws
@@ -50,10 +58,10 @@ INTEG_DIR  := tests/integration
 SYSTEM_DIR := tests/system  # live/system tests (opt-in, uncached)
 
 .PHONY: help venv bootstrap precommit docs lint format \
-	test test-all test-live clean-tests \
-	build upload version fetch-tags changelog changelog-md \
-	release-show release release-patch release-minor release-major \
-	clean run-cli
+        test test-all test-live clean-tests \
+        build upload version fetch-tags changelog changelog-md \
+        release-show release release-patch release-minor release-major \
+        clean run-cli check-clean
 
 help:
 	@echo "Common targets:"
@@ -78,28 +86,28 @@ help:
 
 venv:
 	$(PYTHON_SYS) -m venv $(VENV)
-	$(PY) -m pip install -U pip setuptools wheel
+	"$(PY)" -m pip install -U pip setuptools wheel
 
 bootstrap: venv
-	$(PY) -m pip install -e ".[dev]"
+	"$(PY)" -m pip install -e ".[dev]"
 
 precommit: venv
-	$(PY) -m pre_commit install
+	"$(PY)" -m pre_commit install
 
 # -----------------------------------------------------------------------------#
 # Docs
 docs: venv
-	$(PY) -m sphinx -b html docs docs/_build/html
+	"$(PY)" -m sphinx -b html docs docs/_build/html
 
 # -----------------------------------------------------------------------------#
 # Linting / Formatting
 lint: venv
-	$(PY) -m ruff check .
-	$(PY) -m ruff format --check .
+	"$(PY)" -m ruff check .
+	"$(PY)" -m ruff format --check .
 
 format: venv
-	$(PY) -m ruff check --fix .
-	$(PY) -m ruff format .
+	"$(PY)" -m ruff check --fix .
+	"$(PY)" -m ruff format .
 
 # -----------------------------------------------------------------------------#
 # Incremental Testing (cache via stamps)
@@ -126,7 +134,7 @@ $(UNIT_STAMP): | $(STAMPS_DIR) venv
 	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
 	  echo "=== Running unit tests ==="; \
 	  rm -f .coverage; \
-	  $(PY) -m pytest -q $(UNIT_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_UNIT); \
+	  "$(PY)" -m pytest -q $(UNIT_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_UNIT); \
 	  echo "$new_sig" > $(UNIT_SIG); \
 	  touch $@; \
 	else echo "No changes detected; skipping unit tests."; fi
@@ -140,7 +148,7 @@ $(INTEG_STAMP): | $(STAMPS_DIR) venv
 	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
 	  echo "=== Running integration tests ==="; \
 	  set +e; \
-	  $(PY) -m pytest -q $(INTEG_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_INTEG); \
+	  "$(PY)" -m pytest -q $(INTEG_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_INTEG); \
 	  status=$?; \
 	  set -e; \
 	  if [ "$status" -eq 5 ]; then \
@@ -154,17 +162,17 @@ $(INTEG_STAMP): | $(STAMPS_DIR) venv
 
 test: $(UNIT_STAMP) $(INTEG_STAMP)
 	@echo "=== Aggregated coverage report ==="
-	$(PY) -m coverage report
-	$(PY) -m coverage xml
+	"$(PY)" -m coverage report
+	"$(PY)" -m coverage xml
 	@echo "✅ Unit + Integration tests up-to-date (not live)"
 
 # Full non-live run, no stamps (useful before releases)
 test-all: venv
-	$(PY) -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml --cov-fail-under=40
+	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml --cov-fail-under=40
 
 # Live tests are explicit & uncached (gentle on API; clearer intent)
 test-live: venv
-	SF_LIVE_TESTS=true $(PY) -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --cov=$(PKG) --cov-report=xml
+	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --cov=$(PKG) --cov-report=xml
 
 clean-tests:
 	rm -rf $(STAMPS_DIR)
@@ -172,29 +180,27 @@ clean-tests:
 # -----------------------------------------------------------------------------#
 # Build & Publish
 build: venv
-	$(PY) -m pip install -U build
-	$(PY) -m build
+	"$(PY)" -m pip install -U build
+	"$(PY)" -m build
 
 upload: build
-	$(PY) -m pip install -U twine
-	$(PY) -m twine check dist/*
-	$(PY) -m twine upload dist/*
+	"$(PY)" -m pip install -U twine
+	"$(PY)" -m twine check dist/*
+	"$(PY)" -m twine upload dist/*
 
 # -----------------------------------------------------------------------------#
 # Version & Release helpers (setuptools_scm + Git tags)
 fetch-tags:
 	git fetch --tags --force --prune 2>/dev/null || true
 
-# Single, non-duplicated tag derivation
 LAST_TAG := $(shell git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname | head -n 1 || echo v0.0.0)
 MAJOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
 MINOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
 PATCH    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
 
 version: venv
-	@$(PY) -m setuptools_scm || true
+	@"$(PY)" -m setuptools_scm || true
 
-# Generate release notes since last tag
 define CHANGELOG
 $(shell git log $(LAST_TAG)..HEAD --pretty=format:"- %s (%h)" --no-merges)
 endef
@@ -210,12 +216,11 @@ changelog-md:
 	@echo "✅ docs/CHANGELOG.md updated"
 
 release-show: fetch-tags venv
-	@echo "python exe:"; $(PY) -c "import sys; print(sys.executable)"
-	@echo "setuptools_scm version:"; $(PY) -m setuptools_scm || echo "(unavailable)"
-	@echo "installed dist version:"; $(PY) -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
+	@echo "python exe:"; "$(PY)" -c "import sys; print(sys.executable)"
+	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
+	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
 	@echo "Last Git tag: $(LAST_TAG)"
 
-# Safety check: ensure clean working tree and synced branch before tagging
 check-clean:
 	@if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "❌ Working directory not clean. Commit or stash changes before releasing."; \
@@ -227,7 +232,6 @@ check-clean:
 		exit 1; \
 	fi
 
-# Allow newline in tag messages
 NL := $(shell printf "\n")
 
 release-patch: fetch-tags check-clean
@@ -248,7 +252,6 @@ release-major: fetch-tags check-clean
 	git push origin "$NEW"
 	@echo "Tagged $NEW"
 
-# Meta-release: run tests, show changelog, then dispatch to patch/minor/major
 release: venv
 	@echo "=== Running full test suite before release ==="
 	$(MAKE) test-all
@@ -270,11 +273,10 @@ release: venv
 # CLI convenience
 CLI_ARGS ?=
 run-cli: venv
-	$(PY) -m maws $(CLI_ARGS)
+	"$(PY)" -m maws $(CLI_ARGS)
 
 # -----------------------------------------------------------------------------#
 clean:
 	rm -rf build dist .eggs *.egg-info .coverage htmlcov .pytest_cache coverage.xml
 	find . -type d -name "__pycache__" -prune -exec rm -rf {} +
 	rm -rf $(STAMPS_DIR)
-
