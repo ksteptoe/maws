@@ -10,6 +10,7 @@ from maws import __version__
 from .api import (
     ebs_scan_orphaned_volumes,
     ec2_describe_instances,
+    ec2_list_instances,
     ec2_set_delete_on_termination,
     ec2_terminate_instances,
     setup_logging,
@@ -36,7 +37,23 @@ def _format_table(rows, headers):
     return "\n".join(lines)
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help=(
+        "maws — AWS management utilities (EC2/EBS focus).\n"
+        "\n"
+        "Most useful commands:\n"
+        "  maws ec2 list\n"
+        "  maws ebs scan-orphans\n"
+        "  maws ebs set-delete-on-termination --dry-run i-xxxxxxxxxxxxxxxxx\n"
+        "  maws ec2 terminate --dry-run --confirm TERMINATE i-xxxxxxxxxxxxxxxxx\n"
+        "  maws ec2 terminate --confirm TERMINATE --wait i-xxxxxxxxxxxxxxxxx\n"
+        "\n"
+        "Tip: set these once per shell session (or in ~/.bashrc):\n"
+        "  export AWS_PROFILE=pcs\n"
+        "  export AWS_DEFAULT_REGION=eu-west-2\n"
+    ),
+)
 @click.version_option(__version__, "--version")
 @click.option("-v", "--verbose", "loglevel", flag_value=logging.INFO, default=True, help="INFO logging")
 @click.option("-vv", "--very-verbose", "loglevel", flag_value=logging.DEBUG, help="DEBUG logging")
@@ -44,7 +61,6 @@ def _format_table(rows, headers):
 @click.option("--region", default=None, help="AWS region (optional), e.g. eu-west-2")
 @click.pass_context
 def cli(ctx: click.Context, loglevel: int, profile: Optional[str], region: Optional[str]):
-    """maws — AWS management utilities (EC2/EBS focus)."""
     setup_logging(loglevel)
     ctx.obj = Ctx(loglevel=loglevel, profile=profile, region=region)
 
@@ -122,6 +138,42 @@ def ec2():
     """EC2 instance tools."""
 
 
+@ec2.command("list")
+@click.option(
+    "--state",
+    type=click.Choice(
+        ["pending", "running", "stopping", "stopped", "shutting-down", "terminated"],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Filter by instance state.",
+)
+@click.option("--name-contains", default=None, help="Filter: Name tag contains this substring (case-insensitive).")
+@click.pass_obj
+def ec2_list(ctx: Ctx, state: Optional[str], name_contains: Optional[str]):
+    try:
+        items = ec2_list_instances(
+            profile=ctx.profile,
+            region=ctx.region,
+            state=state.lower() if state else None,
+            name_contains=name_contains,
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    if not items:
+        click.echo("No instances found (with current filters).")
+        return
+
+    rows = [
+        [i["InstanceId"], i["State"], i["Name"], i["Type"], i["AZ"], i["PrivateIp"]]
+        for i in items
+    ]
+    click.echo(_format_table(rows, headers=["InstanceId", "State", "Name", "Type", "AZ", "PrivateIp"]))
+    click.echo(f"\nFound {len(items)} instance(s).")
+
+
 @ec2.command("terminate")
 @click.argument("instance_ids", nargs=-1, required=True)
 @click.option("--dry-run", is_flag=True, help="Validate permissions and show actions; do not change anything.")
@@ -134,19 +186,6 @@ def ec2():
 )
 @click.pass_obj
 def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot: bool, wait: bool, confirm: Optional[str]):
-    """
-    Terminate EC2 instances safely.
-
-    Default behavior:
-      1) Set DeleteOnTermination=True for attached EBS volumes
-      2) Terminate the instance(s)
-
-    Examples:
-      maws ec2 terminate --dry-run i-123
-      maws ec2 terminate --confirm TERMINATE i-123 i-456
-      maws ec2 terminate --confirm TERMINATE --wait i-123
-    """
-    # 1) Describe and show plan
     try:
         summaries = ec2_describe_instances(
             list(instance_ids), profile=ctx.profile, region=ctx.region
@@ -167,7 +206,6 @@ def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot
         click.echo("Re-run with:  maws ec2 terminate --confirm TERMINATE <instance-ids...>")
         raise SystemExit(2)
 
-    # 2) Set DeleteOnTermination unless skipped
     if not skip_dot:
         try:
             dot_changes = ec2_set_delete_on_termination(
@@ -190,7 +228,6 @@ def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot
         click.echo(_format_table(dot_rows, headers=["InstanceId", "Device", "VolumeId", "DoT set"]))
         click.echo(f"\n{'DRY RUN:' if dry_run else 'Done:'} {changed} mapping(s) {'would be' if dry_run else ''} updated.\n")
 
-    # 3) Terminate
     try:
         term_results = ec2_terminate_instances(
             list(instance_ids),
@@ -206,50 +243,3 @@ def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot
     trows = [[iid, state] for (iid, state) in term_results]
     click.echo(_format_table(trows, headers=["InstanceId", "Result"]))
     click.echo("\nDone.")
-
-from .api import ec2_list_instances  # keep import near top if you prefer
-
-
-@ec2.command("list")
-@click.option(
-    "--state",
-    type=click.Choice(
-        ["pending", "running", "stopping", "stopped", "shutting-down", "terminated"],
-        case_sensitive=False,
-    ),
-    default=None,
-    help="Filter by instance state.",
-)
-@click.option("--name-contains", default=None, help="Filter: Name tag contains this substring (case-insensitive).")
-@click.pass_obj
-def ec2_list(ctx: Ctx, state: Optional[str], name_contains: Optional[str]):
-    """
-    List EC2 instances and key fields (inventory view).
-
-    Examples:
-      maws ec2 list
-      maws ec2 list --state running
-      maws ec2 list --name-contains cdc
-      maws ec2 list --state stopped --name-contains nfs
-    """
-    try:
-        items = ec2_list_instances(
-            profile=ctx.profile,
-            region=ctx.region,
-            state=state.lower() if state else None,
-            name_contains=name_contains,
-        )
-    except RuntimeError as e:
-        click.secho(str(e), fg="red")
-        raise SystemExit(2)
-
-    if not items:
-        click.echo("No instances found (with current filters).")
-        return
-
-    rows = [
-        [i["InstanceId"], i["State"], i["Name"], i["Type"], i["AZ"], i["PrivateIp"]]
-        for i in items
-    ]
-    click.echo(_format_table(rows, headers=["InstanceId", "State", "Name", "Type", "AZ", "PrivateIp"]))
-    click.echo(f"\nFound {len(items)} instance(s).")
