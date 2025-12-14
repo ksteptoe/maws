@@ -1,0 +1,68 @@
+[build-system]
+# Use modern backend with versioning via setuptools_scm
+requires = ["setuptools>=69", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maws"
+dynamic = ["version"]
+description = "Project scaffolded with PyScaffold Clickstart."
+readme = "README.rst"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+
+# Runtime-only deps
+dependencies = [
+    "click>=8.1",
+    "pywin32>=306",  # remove or change if not needed for other projects
+]
+
+[project.optional-dependencies]
+# Dev extras: tests, coverage, linting, releases
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+    "pre-commit>=3.7",
+    "build>=1.2",
+    "twine>=5",
+]
+
+[project.urls]
+Homepage = "https://example.com/maws"
+Repository = "https://github.com/example/maws"
+
+[project.scripts]
+# For Clickstart-style CLIs; adapt or remove if the project has no CLI
+maws = "maws.cli:cli"
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "dirty-tag"
+fallback_version = "0.0.1"
+write_to = "src/maws/_version.py"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+select = ["E", "F", "I", "B"]
+# No E501 ignore; Ruff enforces the 120-char limit.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --disable-warnings"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["maws"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+
