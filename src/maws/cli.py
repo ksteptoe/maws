@@ -7,7 +7,13 @@ from typing import Optional, Sequence
 import click
 
 from maws import __version__
-from .api import ebs_scan_orphaned_volumes, ec2_set_delete_on_termination, setup_logging
+from .api import (
+    ebs_scan_orphaned_volumes,
+    ec2_describe_instances,
+    ec2_set_delete_on_termination,
+    ec2_terminate_instances,
+    setup_logging,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -109,3 +115,94 @@ def ebs_scan_orphans(ctx: Ctx, older_than_days: Optional[int]):
 
     click.echo(_format_table(rows, headers=["VolumeId", "Size", "Type", "Enc", "AZ", "Created", "NameTag"]))
     click.echo(f"\nFound {len(orphans)} orphaned volume(s).")
+
+
+@cli.group()
+def ec2():
+    """EC2 instance tools."""
+
+
+@ec2.command("terminate")
+@click.argument("instance_ids", nargs=-1, required=True)
+@click.option("--dry-run", is_flag=True, help="Validate permissions and show actions; do not change anything.")
+@click.option("--skip-dot", is_flag=True, help="Skip setting DeleteOnTermination=True (not recommended).")
+@click.option("--wait", is_flag=True, help="Wait until instances reach 'terminated'.")
+@click.option(
+    "--confirm",
+    default=None,
+    help="Safety gate: must be exactly TERMINATE to proceed (script-friendly).",
+)
+@click.pass_obj
+def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot: bool, wait: bool, confirm: Optional[str]):
+    """
+    Terminate EC2 instances safely.
+
+    Default behavior:
+      1) Set DeleteOnTermination=True for attached EBS volumes
+      2) Terminate the instance(s)
+
+    Examples:
+      maws ec2 terminate --dry-run i-123
+      maws ec2 terminate --confirm TERMINATE i-123 i-456
+      maws ec2 terminate --confirm TERMINATE --wait i-123
+    """
+    # 1) Describe and show plan
+    try:
+        summaries = ec2_describe_instances(
+            list(instance_ids), profile=ctx.profile, region=ctx.region
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    rows = [[s.instance_id, s.state, s.name_tag or ""] for s in summaries]
+    click.echo(_format_table(rows, headers=["InstanceId", "State", "NameTag"]))
+    click.echo("")
+
+    if confirm != "TERMINATE":
+        click.secho(
+            "Refusing to proceed without --confirm TERMINATE (safety gate).",
+            fg="yellow",
+        )
+        click.echo("Re-run with:  maws ec2 terminate --confirm TERMINATE <instance-ids...>")
+        raise SystemExit(2)
+
+    # 2) Set DeleteOnTermination unless skipped
+    if not skip_dot:
+        try:
+            dot_changes = ec2_set_delete_on_termination(
+                list(instance_ids),
+                profile=ctx.profile,
+                region=ctx.region,
+                dry_run=dry_run,
+            )
+        except RuntimeError as e:
+            click.secho(str(e), fg="red")
+            raise SystemExit(2)
+
+        dot_rows = []
+        changed = 0
+        for iid, dev, vol, did_change in dot_changes:
+            dot_rows.append([iid, dev, vol, "YES" if did_change else "no"])
+            if did_change:
+                changed += 1
+
+        click.echo(_format_table(dot_rows, headers=["InstanceId", "Device", "VolumeId", "DoT set"]))
+        click.echo(f"\n{'DRY RUN:' if dry_run else 'Done:'} {changed} mapping(s) {'would be' if dry_run else ''} updated.\n")
+
+    # 3) Terminate
+    try:
+        term_results = ec2_terminate_instances(
+            list(instance_ids),
+            profile=ctx.profile,
+            region=ctx.region,
+            dry_run=dry_run,
+            wait=wait,
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    trows = [[iid, state] for (iid, state) in term_results]
+    click.echo(_format_table(trows, headers=["InstanceId", "Result"]))
+    click.echo("\nDone.")
