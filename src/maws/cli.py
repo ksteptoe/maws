@@ -1,8 +1,3 @@
-"""
-To install run ``pip install .`` (or ``pip install -e .`` for editable mode)
-which will install the command `maws` inside your current environment.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -25,7 +20,6 @@ class Ctx:
 
 
 def _format_table(rows, headers):
-    # simple fixed-width table without external deps
     cols = list(zip(*([headers] + rows))) if rows else [headers]
     widths = [max(len(str(x)) for x in col) for col in cols]
     fmt = "  ".join("{:<" + str(w) + "}" for w in widths)
@@ -41,7 +35,7 @@ def _format_table(rows, headers):
 @click.option("-v", "--verbose", "loglevel", flag_value=logging.INFO, default=True, help="INFO logging")
 @click.option("-vv", "--very-verbose", "loglevel", flag_value=logging.DEBUG, help="DEBUG logging")
 @click.option("--profile", default=None, help="AWS profile name (optional)")
-@click.option("--region", default=None, help="AWS region (optional)")
+@click.option("--region", default=None, help="AWS region (optional), e.g. eu-west-2")
 @click.pass_context
 def cli(ctx: click.Context, loglevel: int, profile: Optional[str], region: Optional[str]):
     """maws — AWS management utilities (EC2/EBS focus)."""
@@ -59,18 +53,16 @@ def ebs():
 @click.option("--dry-run", is_flag=True, help="Show what would change without applying.")
 @click.pass_obj
 def ebs_set_delete_on_termination(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool):
-    """
-    Set DeleteOnTermination=True for all EBS volumes attached to the given INSTANCE_IDS.
-
-    Example:
-      maws --region eu-west-2 ebs set-delete-on-termination i-123 i-456
-    """
-    changes = ec2_set_delete_on_termination(
-        list(instance_ids),
-        profile=ctx.profile,
-        region=ctx.region,
-        dry_run=dry_run,
-    )
+    try:
+        changes = ec2_set_delete_on_termination(
+            list(instance_ids),
+            profile=ctx.profile,
+            region=ctx.region,
+            dry_run=dry_run,
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
 
     rows = []
     changed_count = 0
@@ -80,28 +72,22 @@ def ebs_set_delete_on_termination(ctx: Ctx, instance_ids: Sequence[str], dry_run
             changed_count += 1
 
     click.echo(_format_table(rows, headers=["InstanceId", "Device", "VolumeId", "Changed"]))
-    if dry_run:
-        click.echo(f"\nDRY RUN: {changed_count} mapping(s) would be updated.")
-    else:
-        click.echo(f"\nDone: {changed_count} mapping(s) updated.")
+    click.echo(f"\n{'DRY RUN:' if dry_run else 'Done:'} {changed_count} mapping(s) {'would be' if dry_run else ''} updated.")
 
 
 @ebs.command("scan-orphans")
 @click.option("--older-than-days", type=int, default=None, help="Only show volumes older than N days.")
 @click.pass_obj
 def ebs_scan_orphans(ctx: Ctx, older_than_days: Optional[int]):
-    """
-    List orphaned EBS volumes (State=available), which may be incurring cost.
-
-    Example:
-      maws ebs scan-orphans
-      maws ebs scan-orphans --older-than-days 14
-    """
-    orphans = ebs_scan_orphaned_volumes(
-        profile=ctx.profile,
-        region=ctx.region,
-        older_than_days=older_than_days,
-    )
+    try:
+        orphans = ebs_scan_orphaned_volumes(
+            profile=ctx.profile,
+            region=ctx.region,
+            older_than_days=older_than_days,
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
 
     if not orphans:
         click.echo("No orphaned (available) EBS volumes found.")
@@ -121,10 +107,5 @@ def ebs_scan_orphans(ctx: Ctx, older_than_days: Optional[int]):
             ]
         )
 
-    click.echo(
-        _format_table(
-            rows,
-            headers=["VolumeId", "Size", "Type", "Enc", "AZ", "Created", "NameTag"],
-        )
-    )
+    click.echo(_format_table(rows, headers=["VolumeId", "Size", "Type", "Enc", "AZ", "Created", "NameTag"]))
     click.echo(f"\nFound {len(orphans)} orphaned volume(s).")

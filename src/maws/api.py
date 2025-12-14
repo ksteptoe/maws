@@ -1,14 +1,10 @@
-# ---- Python API ----
-# Functions in this module are imported by the CLI and can also be used directly
-# from Python code.
-
 from __future__ import annotations
 
 import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from maws import __version__
 
@@ -16,7 +12,6 @@ _logger = logging.getLogger(__name__)
 
 
 def setup_logging(loglevel: int) -> None:
-    """Setup basic logging."""
     logformat = "[%(asctime)s] %(levelname)s:%(name)s:%(message)s"
     logging.basicConfig(
         level=loglevel,
@@ -54,13 +49,31 @@ def _boto3_session(profile: Optional[str] = None, region: Optional[str] = None):
     try:
         import boto3  # type: ignore
     except Exception as e:  # pragma: no cover
-        raise RuntimeError(
-            "boto3 is required. Add it to your dependencies: pip install boto3"
-        ) from e
+        raise RuntimeError("boto3 is required. Install with: pip install boto3") from e
 
     if profile:
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
+
+
+def _ec2_client(*, profile: Optional[str], region: Optional[str]):
+    sess = _boto3_session(profile=profile, region=region)
+    try:
+        return sess.client("ec2")
+    except Exception as e:
+        # botocore exceptions are common; avoid hard dependency on botocore symbols
+        name = e.__class__.__name__
+        if name == "NoRegionError":
+            raise RuntimeError(
+                "AWS region is not set. Use --region (e.g. --region eu-west-2) "
+                "or configure a default: `aws configure set region eu-west-2`."
+            ) from e
+        if name in {"NoCredentialsError", "PartialCredentialsError"}:
+            raise RuntimeError(
+                "AWS credentials not found. Configure credentials (aws configure) "
+                "or set AWS_PROFILE / AWS_ACCESS_KEY_ID etc."
+            ) from e
+        raise
 
 
 def ec2_list_block_device_mappings(
@@ -69,11 +82,7 @@ def ec2_list_block_device_mappings(
     profile: Optional[str] = None,
     region: Optional[str] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Return EC2 BlockDeviceMappings for each instance id.
-    """
-    sess = _boto3_session(profile=profile, region=region)
-    ec2 = sess.client("ec2")
+    ec2 = _ec2_client(profile=profile, region=region)
 
     resp = ec2.describe_instances(InstanceIds=list(instance_ids))
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -91,14 +100,7 @@ def ec2_set_delete_on_termination(
     region: Optional[str] = None,
     dry_run: bool = False,
 ) -> List[Tuple[str, str, str, bool]]:
-    """
-    Set DeleteOnTermination=True for all EBS mappings on given instance(s) where it is currently False.
-
-    Returns list of changes as tuples:
-      (instance_id, device_name, volume_id, changed)
-    """
-    sess = _boto3_session(profile=profile, region=region)
-    ec2 = sess.client("ec2")
+    ec2 = _ec2_client(profile=profile, region=region)
 
     mappings_by_iid = ec2_list_block_device_mappings(
         instance_ids, profile=profile, region=region
@@ -110,7 +112,7 @@ def ec2_set_delete_on_termination(
             device = m.get("DeviceName")
             ebs = m.get("Ebs")
             if not device or not ebs:
-                continue  # skip instance-store or weird mappings
+                continue
             vol_id = ebs.get("VolumeId", "?")
             current = bool(ebs.get("DeleteOnTermination", False))
             if current is True:
@@ -124,10 +126,7 @@ def ec2_set_delete_on_termination(
             ec2.modify_instance_attribute(
                 InstanceId=iid,
                 BlockDeviceMappings=[
-                    {
-                        "DeviceName": device,
-                        "Ebs": {"DeleteOnTermination": True},
-                    }
+                    {"DeviceName": device, "Ebs": {"DeleteOnTermination": True}}
                 ],
             )
             changes.append((iid, device, vol_id, True))
@@ -141,25 +140,14 @@ def ebs_scan_orphaned_volumes(
     region: Optional[str] = None,
     older_than_days: Optional[int] = None,
 ) -> List[OrphanVolume]:
-    """
-    Find orphaned EBS volumes (State=available), optionally filtered by age.
-
-    older_than_days: if provided, only return volumes with CreateTime older than N days.
-    """
-    sess = _boto3_session(profile=profile, region=region)
-    ec2 = sess.client("ec2")
+    ec2 = _ec2_client(profile=profile, region=region)
 
     resp = ec2.describe_volumes(Filters=[{"Name": "status", "Values": ["available"]}])
     vols = resp.get("Volumes", [])
 
     cutoff: Optional[datetime] = None
     if older_than_days is not None:
-        cutoff = _utcnow()  # now
-        # compare using a naive timedelta without importing timedelta for brevity
-        cutoff = cutoff.replace()  # keep tz-aware
-
-        # We'll compute cutoff by subtracting days using timestamp arithmetic
-        cutoff_ts = cutoff.timestamp() - (older_than_days * 86400)
+        cutoff_ts = _utcnow().timestamp() - (older_than_days * 86400)
         cutoff = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc)
 
     out: List[OrphanVolume] = []
@@ -186,10 +174,6 @@ def ebs_scan_orphaned_volumes(
 
 
 def maws_api(loglevel: int) -> None:
-    """
-    Backwards-compatible entry used by the original scaffold.
-    The real functionality now lives in CLI subcommands.
-    """
     setup_logging(loglevel)
     _logger.info(f"Version: {__version__}")
     _logger.info("Use the CLI subcommands (e.g. `maws ebs ...`).")
