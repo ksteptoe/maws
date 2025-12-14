@@ -4,7 +4,7 @@
 #   - Linting/formatting via Ruff
 #   - Incremental pytest testing via STAMPs
 #   - Release helpers (Git tag based)
-#   - venv-based bootstrap (.venv)
+#   - venv-based bootstrap (.venv by default; override with VENV=...)
 # -----------------------------------------------------------------------------
 
 .SILENT:
@@ -13,18 +13,14 @@ SHELL := $(shell which bash)
 .SHELLFLAGS := -eu -o pipefail -c
 
 # ---- Python / venv ----------------------------------------------------------
-VENV := .venv
+VENV ?= .venv
 
 # Pick a system Python: use 'python' if present, else Windows launcher 'py -3'
 PYTHON_SYS := $(shell command -v python >/dev/null 2>&1 && echo python || echo py -3)
 
-# IMPORTANT:
-# On Windows under Git Bash/MSYS, `python -m venv` may create a POSIX-style venv:
-#   .venv/bin/python
-# rather than:
-#   .venv/Scripts/python.exe
-#
-# So we detect the venv python *at recipe execution time* (recursive variable).
+# On Windows under Git Bash/MSYS, venv layout can be either:
+#   .venv/Scripts/python(.exe)   OR   .venv/bin/python
+# So detect at recipe execution time.
 PY = $(shell \
   for p in "$(VENV)/Scripts/python.exe" "$(VENV)/Scripts/python" "$(VENV)/bin/python"; do \
     [ -f "$$p" ] && echo "$$p" && exit 0; \
@@ -67,7 +63,7 @@ help:
 	@echo "Common targets:"
 	@echo "  make venv                - create $(VENV) and upgrade pip"
 	@echo "  make bootstrap           - create $(VENV) and install .[dev]"
-	@echo "  make precommit           - install pre-commit hook"
+	@echo "  make precommit           - install pre-commit hook (requires bootstrap)"
 	@echo "  make docs                - build Sphinx/MyST docs to docs/_build/html"
 	@echo "  make lint                - run Ruff checks"
 	@echo "  make format              - auto-fix via Ruff"
@@ -83,6 +79,10 @@ help:
 	@echo "  make release             - run tests, show changelog and tag (KIND=patch|minor|major)"
 	@echo "  make clean               - remove build artifacts"
 	@echo "  make run-cli             - run via python -m package (pass CLI_ARGS=...)"
+	@echo ""
+	@echo "Tip (Windows/OneDrive permission issues):"
+	@echo '  make bootstrap VENV="$$HOME/.venvs/maws"'
+	@echo '  make release   VENV="$$HOME/.venvs/maws" KIND=major'
 
 venv:
 	$(PYTHON_SYS) -m venv $(VENV)
@@ -91,21 +91,21 @@ venv:
 bootstrap: venv
 	"$(PY)" -m pip install -e ".[dev]"
 
-precommit: venv
+precommit: bootstrap
 	"$(PY)" -m pre_commit install
 
 # -----------------------------------------------------------------------------#
 # Docs
-docs: venv
+docs: bootstrap
 	"$(PY)" -m sphinx -b html docs docs/_build/html
 
 # -----------------------------------------------------------------------------#
 # Linting / Formatting
-lint: venv
+lint: bootstrap
 	"$(PY)" -m ruff check .
 	"$(PY)" -m ruff format --check .
 
-format: venv
+format: bootstrap
 	"$(PY)" -m ruff check --fix .
 	"$(PY)" -m ruff format .
 
@@ -125,7 +125,7 @@ define compute_dir_sig
 | LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $1}'
 endef
 
-$(UNIT_STAMP): | $(STAMPS_DIR) venv
+$(UNIT_STAMP): | $(STAMPS_DIR) bootstrap
 	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -139,7 +139,7 @@ $(UNIT_STAMP): | $(STAMPS_DIR) venv
 	  touch $@; \
 	else echo "No changes detected; skipping unit tests."; fi
 
-$(INTEG_STAMP): | $(STAMPS_DIR) venv
+$(INTEG_STAMP): | $(STAMPS_DIR) bootstrap
 	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -167,11 +167,11 @@ test: $(UNIT_STAMP) $(INTEG_STAMP)
 	@echo "✅ Unit + Integration tests up-to-date (not live)"
 
 # Full non-live run, no stamps (useful before releases)
-test-all: venv
+test-all: bootstrap
 	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml --cov-fail-under=40
 
 # Live tests are explicit & uncached (gentle on API; clearer intent)
-test-live: venv
+test-live: bootstrap
 	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --cov=$(PKG) --cov-report=xml
 
 clean-tests:
@@ -179,7 +179,7 @@ clean-tests:
 
 # -----------------------------------------------------------------------------#
 # Build & Publish
-build: venv
+build: bootstrap
 	"$(PY)" -m pip install -U build
 	"$(PY)" -m build
 
@@ -198,7 +198,7 @@ MAJOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
 MINOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
 PATCH    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
 
-version: venv
+version: bootstrap
 	@"$(PY)" -m setuptools_scm || true
 
 define CHANGELOG
@@ -215,7 +215,7 @@ changelog-md:
 	@printf "# Changelog\n\n## Since %s\n\n%s\n" "$(LAST_TAG)" "$(CHANGELOG)" > docs/CHANGELOG.md
 	@echo "✅ docs/CHANGELOG.md updated"
 
-release-show: fetch-tags venv
+release-show: fetch-tags bootstrap
 	@echo "python exe:"; "$(PY)" -c "import sys; print(sys.executable)"
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
 	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
@@ -252,7 +252,7 @@ release-major: fetch-tags check-clean
 	git push origin "$NEW"
 	@echo "Tagged $NEW"
 
-release: venv
+release: bootstrap
 	@echo "=== Running full test suite before release ==="
 	$(MAKE) test-all
 	@echo "=== Changelog (from $(LAST_TAG) to HEAD) ==="
@@ -272,7 +272,7 @@ release: venv
 # -----------------------------------------------------------------------------#
 # CLI convenience
 CLI_ARGS ?=
-run-cli: venv
+run-cli: bootstrap
 	"$(PY)" -m maws $(CLI_ARGS)
 
 # -----------------------------------------------------------------------------#
