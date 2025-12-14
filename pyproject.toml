@@ -15,6 +15,7 @@ authors = [{ name = "Your Name", email = "you@example.com" }]
 # Runtime-only deps
 dependencies = [
     "click>=8.1",
+    "boto3>=1.34",
     "pywin32>=306",  # remove or change if not needed for other projects
 ]
 
@@ -64,5 +65,3 @@ omit = ["tests/*"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-
-
