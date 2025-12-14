@@ -206,3 +206,50 @@ def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot
     trows = [[iid, state] for (iid, state) in term_results]
     click.echo(_format_table(trows, headers=["InstanceId", "Result"]))
     click.echo("\nDone.")
+
+from .api import ec2_list_instances  # keep import near top if you prefer
+
+
+@ec2.command("list")
+@click.option(
+    "--state",
+    type=click.Choice(
+        ["pending", "running", "stopping", "stopped", "shutting-down", "terminated"],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Filter by instance state.",
+)
+@click.option("--name-contains", default=None, help="Filter: Name tag contains this substring (case-insensitive).")
+@click.pass_obj
+def ec2_list(ctx: Ctx, state: Optional[str], name_contains: Optional[str]):
+    """
+    List EC2 instances and key fields (inventory view).
+
+    Examples:
+      maws ec2 list
+      maws ec2 list --state running
+      maws ec2 list --name-contains cdc
+      maws ec2 list --state stopped --name-contains nfs
+    """
+    try:
+        items = ec2_list_instances(
+            profile=ctx.profile,
+            region=ctx.region,
+            state=state.lower() if state else None,
+            name_contains=name_contains,
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    if not items:
+        click.echo("No instances found (with current filters).")
+        return
+
+    rows = [
+        [i["InstanceId"], i["State"], i["Name"], i["Type"], i["AZ"], i["PrivateIp"]]
+        for i in items
+    ]
+    click.echo(_format_table(rows, headers=["InstanceId", "State", "Name", "Type", "AZ", "PrivateIp"]))
+    click.echo(f"\nFound {len(items)} instance(s).")

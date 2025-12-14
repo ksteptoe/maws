@@ -277,3 +277,54 @@ def maws_api(loglevel: int) -> None:
     setup_logging(loglevel)
     _logger.info(f"Version: {__version__}")
     _logger.info("Use the CLI subcommands (e.g. `maws ebs ...`, `maws ec2 ...`).")
+
+def ec2_list_instances(
+    *,
+    profile: Optional[str] = None,
+    region: Optional[str] = None,
+    state: Optional[str] = None,
+    name_contains: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    List EC2 instances with useful fields.
+
+    state: optional instance state filter (running|stopped|terminated|pending|stopping|shutting-down)
+    name_contains: optional case-insensitive substring match against Name tag
+    """
+    ec2 = _ec2_client(profile=profile, region=region)
+
+    filters = []
+    if state:
+        filters.append({"Name": "instance-state-name", "Values": [state]})
+
+    kwargs: Dict[str, Any] = {}
+    if filters:
+        kwargs["Filters"] = filters
+
+    try:
+        resp = ec2.describe_instances(**kwargs)
+    except Exception as e:
+        raise _friendly_aws_error(e) from e
+
+    out: List[Dict[str, Any]] = []
+    for r in resp.get("Reservations", []):
+        for inst in r.get("Instances", []):
+            tags = inst.get("Tags")
+            name = _get_name_tag(tags) or ""
+
+            if name_contains and name_contains.lower() not in name.lower():
+                continue
+
+            out.append(
+                {
+                    "InstanceId": inst["InstanceId"],
+                    "State": inst.get("State", {}).get("Name", "?"),
+                    "Name": name,
+                    "Type": inst.get("InstanceType", "?"),
+                    "AZ": inst.get("Placement", {}).get("AvailabilityZone", "?"),
+                    "PrivateIp": inst.get("PrivateIpAddress", ""),
+                }
+            )
+
+    # stable ordering: Name then InstanceId
+    return sorted(out, key=lambda x: (x["Name"], x["InstanceId"]))
