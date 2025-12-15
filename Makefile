@@ -214,23 +214,35 @@ upload: build
 fetch-tags:
 	git fetch --tags --force --prune 2>/dev/null || true
 
-LAST_TAG := $(shell git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname | head -n 1 || echo v0.0.0)
-MAJOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
-MINOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
-PATCH    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
+# Always resolve a tag (fallback to v0.0.0 if none exist)
+LAST_TAG := $(strip $(shell git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname | head -n 1))
+ifeq ($(LAST_TAG),)
+LAST_TAG := v0.0.0
+endif
+
+MAJOR := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
+MINOR := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
+PATCH := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+).*/\1/')
 
 version: $(ENV_STAMP)
 	@"$(PY)" -m setuptools_scm || true
 
+# Changelog text since LAST_TAG (if LAST_TAG is v0.0.0 and doesn't exist, use full history)
 define CHANGELOG
-$(shell git log $(LAST_TAG)..HEAD --pretty=format:"- %s (%h)" --no-merges)
+$(shell \
+  if git rev-parse "$(LAST_TAG)" >/dev/null 2>&1; then \
+    git log "$(LAST_TAG)..HEAD" --pretty=format:"- %s (%h)" --no-merges; \
+  else \
+    git log HEAD --pretty=format:"- %s (%h)" --no-merges; \
+  fi \
+)
 endef
 
-changelog:
+changelog: fetch-tags
 	@echo "Changes since $(LAST_TAG):"
 	@echo "$(CHANGELOG)"
 
-changelog-md:
+changelog-md: fetch-tags
 	@mkdir -p docs
 	@echo "Writing docs/CHANGELOG.md ..."
 	@printf "# Changelog\n\n## Since %s\n\n%s\n" "$(LAST_TAG)" "$(CHANGELOG)" > docs/CHANGELOG.md
@@ -241,6 +253,7 @@ release-show: fetch-tags $(ENV_STAMP)
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
 	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
 	@echo "Last Git tag: $(LAST_TAG)"
+
 
 check-clean:
 	@if ! git diff --quiet || ! git diff --cached --quiet; then \
@@ -274,7 +287,7 @@ release-major: fetch-tags check-clean
 	echo "Tagged $$NEW"
 
 
-release: $(ENV_STAMP)
+release: fetch-tags $(ENV_STAMP)
 	@echo "=== Running full test suite before release ==="
 	$(MAKE) test-all
 	@echo "=== Changelog (from $(LAST_TAG) to HEAD) ==="
