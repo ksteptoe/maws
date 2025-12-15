@@ -32,7 +32,7 @@ $(ENV_STAMP): $(CONF_FILES) | venv
 PYTHON_SYS := $(shell command -v python >/dev/null 2>&1 && echo python || echo py -3)
 
 # Linux Friendly too
-PY = $(if $(wildcard $(VENV)/Scripts/python.exe),$(VENV)/Scripts/python.exe,$(VENV)/bin/python) 
+PY = $(if $(wildcard $(VENV)/Scripts/python.exe),$(VENV)/Scripts/python.exe,$(VENV)/bin/python)
 
 # Main code package (templated)
 PKG        := maws
@@ -135,16 +135,25 @@ endef
 $(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
-	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
-	new_sig=$( printf "%s\n%s\n%s\n" "$tests_sig" "$code_sig" "$conf_sig" | sha1sum | awk '{print $1}' ); \
-	old_sig=$(cat $(UNIT_SIG) 2>/dev/null || echo -n); \
-	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
+	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' ); \
+	new_sig=$$( printf "%s\n%s\n%s\n" "$$tests_sig" "$$code_sig" "$$conf_sig" | sha1sum | awk '{print $$1}' ); \
+	old_sig=$$(cat $(UNIT_SIG) 2>/dev/null || echo -n); \
+	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $$@ ]; then \
 	  echo "=== Running unit tests ==="; \
 	  rm -f .coverage; \
+	  set +e; \
 	  "$(PY)" -m pytest -q $(UNIT_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_UNIT); \
-	  echo "$new_sig" > $(UNIT_SIG); \
-	  touch $@; \
+	  status=$$?; \
+	  set -e; \
+	  if [ "$$status" -eq 5 ]; then \
+	    echo "No unit tests collected; treating as success."; \
+	  elif [ "$$status" -ne 0 ]; then \
+	    exit $$status; \
+	  fi; \
+	  echo "$$new_sig" > $(UNIT_SIG); \
+	  touch $$@; \
 	else echo "No changes detected; skipping unit tests."; fi
+
 
 $(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
