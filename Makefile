@@ -15,24 +15,30 @@ SHELL := $(shell which bash)
 # ---- Python / venv ----------------------------------------------------------
 VENV ?= .venv
 
+# ---- Environment install stamp ---------------------------------------------
+
+CONF_FILES := pyproject.toml
+ENV_STAMP := $(VENV)/.installed
+
+$(ENV_STAMP): $(CONF_FILES) | venv
+	@echo "Installing project dependencies (editable)..."
+	"$(PY)" -m pip install -U pip setuptools wheel
+	"$(PY)" -m pip install -e ".[dev]"
+	@echo "installed" > "$(ENV_STAMP)"
+
+
 # Pick a system Python: use 'python' if present, else Windows launcher 'py -3'
 PYTHON_SYS := $(shell command -v python >/dev/null 2>&1 && echo python || echo py -3)
 
-# On Windows under Git Bash/MSYS, venv layout can be either:
-#   .venv/Scripts/python(.exe)   OR   .venv/bin/python
-# So detect at recipe execution time.
-PY = $(shell \
-  for p in "$(VENV)/Scripts/python.exe" "$(VENV)/Scripts/python" "$(VENV)/bin/python"; do \
-    [ -f "$$p" ] && echo "$$p" && exit 0; \
-  done; \
-  echo "$(VENV)/bin/python" \
-)
+# Linux Friendly too
+PY = $(if $(wildcard $(VENV)/Scripts/python.exe),$(VENV)/Scripts/python.exe,$(VENV)/bin/python) 
 
 # Main code package (templated)
 PKG        := maws
 CODE_DIRS  := src/$(PKG)
-CONF_FILES := pyproject.toml
 STAMPS_DIR := .stamps
+UNIT_STAMP  := $(STAMPS_DIR)/unit.ok
+INTEG_STAMP := $(STAMPS_DIR)/integration.ok
 NO_CACHE  ?= 0
 
 # Default release kind for `make release` (patch|minor|major)
@@ -61,7 +67,7 @@ SYSTEM_DIR := tests/system  # live/system tests (opt-in, uncached)
 
 help:
 	@echo "Common targets:"
-	@echo "  make venv                - create $(VENV) and upgrade pip"
+	@echo "  make venv                - create virtual environment"
 	@echo "  make bootstrap           - create $(VENV) and install .[dev]"
 	@echo "  make precommit           - install pre-commit hook (requires bootstrap)"
 	@echo "  make docs                - build Sphinx/MyST docs to docs/_build/html"
@@ -84,28 +90,30 @@ help:
 	@echo '  make bootstrap VENV="$$HOME/.venvs/maws"'
 	@echo '  make release   VENV="$$HOME/.venvs/maws" KIND=major'
 
-venv:
+$(VENV)/pyvenv.cfg:
 	$(PYTHON_SYS) -m venv $(VENV)
-	"$(PY)" -m pip install -U pip setuptools wheel
 
-bootstrap: venv
-	"$(PY)" -m pip install -e ".[dev]"
+venv: $(VENV)/pyvenv.cfg
+
+bootstrap: $(ENV_STAMP)
+	@echo "Environment ready."
+
 
 precommit: bootstrap
 	"$(PY)" -m pre_commit install
 
 # -----------------------------------------------------------------------------#
 # Docs
-docs: bootstrap
+docs: $(ENV_STAMP)
 	"$(PY)" -m sphinx -b html docs docs/_build/html
 
 # -----------------------------------------------------------------------------#
 # Linting / Formatting
-lint: bootstrap
+lint: $(ENV_STAMP)
 	"$(PY)" -m ruff check .
 	"$(PY)" -m ruff format --check .
 
-format: bootstrap
+format: $(ENV_STAMP)
 	"$(PY)" -m ruff check --fix .
 	"$(PY)" -m ruff format .
 
@@ -115,9 +123,7 @@ format: bootstrap
 $(STAMPS_DIR):
 	mkdir -p $(STAMPS_DIR)
 
-UNIT_STAMP  := $(STAMPS_DIR)/unit.ok
 UNIT_SIG    := $(STAMPS_DIR)/unit.sig
-INTEG_STAMP := $(STAMPS_DIR)/integration.ok
 INTEG_SIG   := $(STAMPS_DIR)/integration.sig
 
 define compute_dir_sig
@@ -125,7 +131,7 @@ define compute_dir_sig
 | LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $1}'
 endef
 
-$(UNIT_STAMP): | $(STAMPS_DIR) bootstrap
+$(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -139,7 +145,7 @@ $(UNIT_STAMP): | $(STAMPS_DIR) bootstrap
 	  touch $@; \
 	else echo "No changes detected; skipping unit tests."; fi
 
-$(INTEG_STAMP): | $(STAMPS_DIR) bootstrap
+$(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
 	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
 	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
@@ -167,11 +173,11 @@ test: $(UNIT_STAMP) $(INTEG_STAMP)
 	@echo "✅ Unit + Integration tests up-to-date (not live)"
 
 # Full non-live run, no stamps (useful before releases)
-test-all: bootstrap
+test-all: $(ENV_STAMP)
 	"$(PY)" -m pytest -v -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) --cov=$(PKG) --cov-report=term-missing --cov-report=xml --cov-fail-under=40
 
 # Live tests are explicit & uncached (gentle on API; clearer intent)
-test-live: bootstrap
+test-live: $(ENV_STAMP)
 	SF_LIVE_TESTS=true "$(PY)" -m pytest -v -m live $(PYTEST_WARN) --timeout=180 --cov=$(PKG) --cov-report=xml
 
 clean-tests:
@@ -179,7 +185,7 @@ clean-tests:
 
 # -----------------------------------------------------------------------------#
 # Build & Publish
-build: bootstrap
+build: $(ENV_STAMP)
 	"$(PY)" -m pip install -U build
 	"$(PY)" -m build
 
@@ -198,7 +204,7 @@ MAJOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v([0-9]+)\..*/\1/')
 MINOR    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
 PATCH    := $(shell echo "$(LAST_TAG)" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
 
-version: bootstrap
+version: $(ENV_STAMP)
 	@"$(PY)" -m setuptools_scm || true
 
 define CHANGELOG
@@ -215,7 +221,7 @@ changelog-md:
 	@printf "# Changelog\n\n## Since %s\n\n%s\n" "$(LAST_TAG)" "$(CHANGELOG)" > docs/CHANGELOG.md
 	@echo "✅ docs/CHANGELOG.md updated"
 
-release-show: fetch-tags bootstrap
+release-show: fetch-tags $(ENV_STAMP)
 	@echo "python exe:"; "$(PY)" -c "import sys; print(sys.executable)"
 	@echo "setuptools_scm version:"; "$(PY)" -m setuptools_scm || echo "(unavailable)"
 	@echo "installed dist version:"; "$(PY)" -c "import importlib.metadata as m; print(m.version('$(PKG)'))" || echo "(package not installed)"
@@ -252,7 +258,7 @@ release-major: fetch-tags check-clean
 	git push origin "$NEW"
 	@echo "Tagged $NEW"
 
-release: bootstrap
+release: $(ENV_STAMP)
 	@echo "=== Running full test suite before release ==="
 	$(MAKE) test-all
 	@echo "=== Changelog (from $(LAST_TAG) to HEAD) ==="
@@ -272,7 +278,7 @@ release: bootstrap
 # -----------------------------------------------------------------------------#
 # CLI convenience
 CLI_ARGS ?=
-run-cli: bootstrap
+run-cli: $(ENV_STAMP)
 	"$(PY)" -m maws $(CLI_ARGS)
 
 # -----------------------------------------------------------------------------#
