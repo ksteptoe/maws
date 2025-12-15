@@ -129,16 +129,17 @@ INTEG_SIG   := $(STAMPS_DIR)/integration.sig
 
 define compute_dir_sig
 { [ -d "$(1)" ] && find $(1) -type f -not -path "*/__pycache__/*" -print0 || true; } \
-| LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $1}'
+| LC_ALL=C sort -z | xargs -0r sha1sum | sha1sum | awk '{print $$1}'
 endef
 
+
 $(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
-	@tests_sig=$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
-	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
-	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' ); \
+	@tests_sig=$$( $(call compute_dir_sig,$(UNIT_DIR)) ); \
+	code_sig=$$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
+	conf_sig=$$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' ); \
 	new_sig=$$( printf "%s\n%s\n%s\n" "$$tests_sig" "$$code_sig" "$$conf_sig" | sha1sum | awk '{print $$1}' ); \
 	old_sig=$$(cat $(UNIT_SIG) 2>/dev/null || echo -n); \
-	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $$@ ]; then \
+	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $@ ]; then \
 	  echo "=== Running unit tests ==="; \
 	  rm -f .coverage; \
 	  set +e; \
@@ -151,30 +152,34 @@ $(UNIT_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
 	    exit $$status; \
 	  fi; \
 	  echo "$$new_sig" > $(UNIT_SIG); \
-	  touch $$@; \
-	else echo "No changes detected; skipping unit tests."; fi
-
+	  touch $@; \
+	else \
+	  echo "No changes detected; skipping unit tests."; \
+	fi
 
 $(INTEG_STAMP): | $(STAMPS_DIR) $(ENV_STAMP)
-	@tests_sig=$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
-	code_sig=$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
-	conf_sig=$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $1}' | sha1sum | awk '{print $1}' ); \
-	new_sig=$( printf "%s\n%s\n%s\n" "$tests_sig" "$code_sig" "$conf_sig" | sha1sum | awk '{print $1}' ); \
-	old_sig=$(cat $(INTEG_SIG) 2>/dev/null || echo -n); \
-	if [ "$(NO_CACHE)" = "1" ] || [ "$new_sig" != "$old_sig" ] || [ ! -f $@ ]; then \
+	@tests_sig=$$( $(call compute_dir_sig,$(INTEG_DIR)) ); \
+	code_sig=$$( $(call compute_dir_sig,$(CODE_DIRS)) ); \
+	conf_sig=$$( sha1sum $(CONF_FILES) 2>/dev/null | awk '{print $$1}' | sha1sum | awk '{print $$1}' ); \
+	new_sig=$$( printf "%s\n%s\n%s\n" "$$tests_sig" "$$code_sig" "$$conf_sig" | sha1sum | awk '{print $$1}' ); \
+	old_sig=$$(cat $(INTEG_SIG) 2>/dev/null || echo -n); \
+	if [ "$(NO_CACHE)" = "1" ] || [ "$$new_sig" != "$$old_sig" ] || [ ! -f $@ ]; then \
 	  echo "=== Running integration tests ==="; \
 	  set +e; \
 	  "$(PY)" -m pytest -q $(INTEG_DIR) -m "not live" $(PYTEST_WARN) $(PYTEST_XDIST) $(PYTEST_TIMEOUT) $(PYTEST_COV_INTEG); \
-	  status=$?; \
+	  status=$$?; \
 	  set -e; \
-	  if [ "$status" -eq 5 ]; then \
+	  if [ "$$status" -eq 5 ]; then \
 	    echo "No integration tests collected; treating as success."; \
-	  elif [ "$status" -ne 0 ]; then \
-	    exit $status; \
+	  elif [ "$$status" -ne 0 ]; then \
+	    exit $$status; \
 	  fi; \
-	  echo "$new_sig" > $(INTEG_SIG); \
+	  echo "$$new_sig" > $(INTEG_SIG); \
 	  touch $@; \
-	else echo "No changes detected; skipping integration tests."; fi
+	else \
+	  echo "No changes detected; skipping integration tests."; \
+	fi
+
 
 test: $(UNIT_STAMP) $(INTEG_STAMP)
 	@echo "=== Aggregated coverage report ==="
