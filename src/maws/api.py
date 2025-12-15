@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from maws import __version__
@@ -39,6 +39,20 @@ class InstanceSummary:
     name_tag: Optional[str]
 
 
+@dataclass(frozen=True)
+class DailyCost:
+    day: str  # YYYY-MM-DD
+    amount: float
+    unit: str
+
+
+@dataclass(frozen=True)
+class ServiceCost:
+    service: str
+    amount: float
+    unit: str
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -70,6 +84,26 @@ def _ec2_client(*, profile: Optional[str], region: Optional[str]):
     except Exception as e:
         name = e.__class__.__name__
         if name == "NoRegionError":
+            raise RuntimeError(
+                "AWS region is not set. Use --region (e.g. --region eu-west-2) "
+                "or set a default region."
+            ) from e
+        raise
+
+
+# Cost Explorer is effectively a us-east-1 endpoint (ce.us-east-1.amazonaws.com)
+_CE_REGION = "us-east-1"
+
+
+def _ce_client(*, profile: Optional[str], region: Optional[str]):
+    # Keep signature aligned with other clients; we ignore `region` and force us-east-1.
+    sess = _boto3_session(profile=profile, region=region)
+    try:
+        return sess.client("ce", region_name=_CE_REGION)
+    except Exception as e:
+        name = e.__class__.__name__
+        if name == "NoRegionError":
+            # Should not happen (we force region_name) but keep it friendly.
             raise RuntimeError(
                 "AWS region is not set. Use --region (e.g. --region eu-west-2) "
                 "or set a default region."
@@ -251,7 +285,6 @@ def ec2_terminate_instances(
     except Exception as e:
         # DryRunOperation is expected when DryRun=True and you have permission.
         if e.__class__.__name__ == "ClientError":
-            # ClientError wraps DryRunOperation; keep it simple with a string check.
             msg = str(e)
             if "DryRunOperation" in msg:
                 return [(iid, "dry-run-ok") for iid in instance_ids]
@@ -272,11 +305,6 @@ def ec2_terminate_instances(
 
     return results
 
-
-def maws_api(loglevel: int) -> None:
-    setup_logging(loglevel)
-    _logger.info(f"Version: {__version__}")
-    _logger.info("Use the CLI subcommands (e.g. `maws ebs ...`, `maws ec2 ...`).")
 
 def ec2_list_instances(
     *,
@@ -328,3 +356,151 @@ def ec2_list_instances(
 
     # stable ordering: Name then InstanceId
     return sorted(out, key=lambda x: (x["Name"], x["InstanceId"]))
+
+
+# -----------------------------------------------------------------------------
+# Cost Explorer (Costs)
+
+_VALID_COST_METRICS = {
+    "UnblendedCost",
+    "BlendedCost",
+    "AmortizedCost",
+    "NetUnblendedCost",
+    "NetAmortizedCost",
+}
+
+
+def _ensure_metric(metric: str) -> str:
+    if metric not in _VALID_COST_METRICS:
+        raise RuntimeError(
+            f"Unsupported metric '{metric}'. Choose one of: {', '.join(sorted(_VALID_COST_METRICS))}"
+        )
+    return metric
+
+
+def _daterange_days(days: int) -> Tuple[str, str]:
+    if days <= 0:
+        raise RuntimeError("--days must be >= 1")
+    today = date.today()
+    start = (today - timedelta(days=days - 1)).isoformat()
+    end = (today + timedelta(days=1)).isoformat()  # end is exclusive
+    return start, end
+
+
+def _first_of_month_to_tomorrow() -> Tuple[str, str]:
+    today = date.today()
+    start = today.replace(day=1).isoformat()
+    end = (today + timedelta(days=1)).isoformat()  # end is exclusive
+    return start, end
+
+
+def costs_month_to_date_total(
+    *,
+    profile: Optional[str] = None,
+    region: Optional[str] = None,
+    metric: str = "UnblendedCost",
+) -> Tuple[float, str, str, str]:
+    """
+    Month-to-date total cost.
+    Returns: (amount, unit, start, end_exclusive)
+    """
+    metric = _ensure_metric(metric)
+    ce = _ce_client(profile=profile, region=region)
+    start, end = _first_of_month_to_tomorrow()
+
+    try:
+        resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": start, "End": end},
+            Granularity="MONTHLY",
+            Metrics=[metric],
+        )
+    except Exception as e:
+        raise _friendly_aws_error(e) from e
+
+    rbt = resp.get("ResultsByTime", [])
+    if not rbt:
+        return (0.0, "USD", start, end)
+
+    total = rbt[0].get("Total", {}).get(metric, {})
+    amt = float(total.get("Amount", 0.0))
+    unit = str(total.get("Unit", "USD"))
+    return (amt, unit, start, end)
+
+
+def costs_daily(
+    *,
+    profile: Optional[str] = None,
+    region: Optional[str] = None,
+    days: int = 14,
+    metric: str = "UnblendedCost",
+) -> List[DailyCost]:
+    """
+    Daily cost for the last N days (including today).
+    """
+    metric = _ensure_metric(metric)
+    ce = _ce_client(profile=profile, region=region)
+    start, end = _daterange_days(days)
+
+    try:
+        resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": start, "End": end},
+            Granularity="DAILY",
+            Metrics=[metric],
+        )
+    except Exception as e:
+        raise _friendly_aws_error(e) from e
+
+    out: List[DailyCost] = []
+    for day in resp.get("ResultsByTime", []):
+        d = day.get("TimePeriod", {}).get("Start", "?")
+        total = day.get("Total", {}).get(metric, {})
+        amt = float(total.get("Amount", 0.0))
+        unit = str(total.get("Unit", "USD"))
+        out.append(DailyCost(day=d, amount=amt, unit=unit))
+
+    return out
+
+
+def costs_by_service(
+    *,
+    profile: Optional[str] = None,
+    region: Optional[str] = None,
+    days: int = 30,
+    metric: str = "UnblendedCost",
+) -> List[ServiceCost]:
+    """
+    Aggregate cost by SERVICE over the last N days (including today).
+    """
+    metric = _ensure_metric(metric)
+    ce = _ce_client(profile=profile, region=region)
+    start, end = _daterange_days(days)
+
+    try:
+        resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": start, "End": end},
+            Granularity="DAILY",
+            Metrics=[metric],
+            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+        )
+    except Exception as e:
+        raise _friendly_aws_error(e) from e
+
+    totals: Dict[str, Tuple[float, str]] = {}
+    for day in resp.get("ResultsByTime", []):
+        for g in day.get("Groups", []):
+            keys = g.get("Keys", [])
+            service = keys[0] if keys else "Unknown"
+            m = g.get("Metrics", {}).get(metric, {})
+            amt = float(m.get("Amount", 0.0))
+            unit = str(m.get("Unit", "USD"))
+            prev_amt, _prev_unit = totals.get(service, (0.0, unit))
+            totals[service] = (prev_amt + amt, unit)
+
+    out = [ServiceCost(service=s, amount=a, unit=u) for (s, (a, u)) in totals.items()]
+    return sorted(out, key=lambda x: x.amount, reverse=True)
+
+
+def maws_api(loglevel: int) -> None:
+    setup_logging(loglevel)
+    _logger.info(f"Version: {__version__}")
+    _logger.info("Use the CLI subcommands (e.g. `maws ebs ...`, `maws ec2 ...`).")
