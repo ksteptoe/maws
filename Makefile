@@ -256,22 +256,23 @@ check-clean:
 NL := $(shell printf "\n")
 
 release-patch: fetch-tags check-clean
-	NEW=v$(MAJOR).$(MINOR).$(($(printf '%d' $(PATCH)) + 1))
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"
-	git push origin "$NEW"
-	@echo "Tagged $NEW"
+	@NEW="v$(MAJOR).$(MINOR).$$(($(PATCH) + 1))"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
 
 release-minor: fetch-tags check-clean
-	NEW=v$(MAJOR).$(($(printf '%d' $(MINOR)) + 1)).0
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"
-	git push origin "$NEW"
-	@echo "Tagged $NEW"
+	@NEW="v$(MAJOR).$$(($(MINOR) + 1)).0"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
 
 release-major: fetch-tags check-clean
-	NEW=v$(($(printf '%d' $(MAJOR)) + 1)).0.0
-	git tag -a "$NEW" -m "release: $NEW$(NL)$(NL)$(CHANGELOG)"
-	git push origin "$NEW"
-	@echo "Tagged $NEW"
+	@NEW="v$$(($(MAJOR) + 1)).0.0"; \
+	git tag -a "$$NEW" -m "release: $$NEW$(NL)$(NL)$(CHANGELOG)"; \
+	git push origin "$$NEW"; \
+	echo "Tagged $$NEW"
+
 
 release: $(ENV_STAMP)
 	@echo "=== Running full test suite before release ==="
