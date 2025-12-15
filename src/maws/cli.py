@@ -8,6 +8,9 @@ import click
 
 from maws import __version__
 from .api import (
+    costs_by_service,
+    costs_daily,
+    costs_month_to_date_total,
     ebs_scan_orphaned_volumes,
     ec2_describe_instances,
     ec2_list_instances,
@@ -42,20 +45,18 @@ def _format_table(rows, headers):
     help=(
         "maws — AWS management utilities (EC2/EBS focus).\n"
         "\n"
+        "\b\n"
         "Most useful commands:\n"
-        "\n"
         "  maws ec2 list\n"
-        "\n"
         "  maws ebs scan-orphans\n"
-        "\n"
         "  maws ebs set-delete-on-termination --dry-run i-xxxxxxxxxxxxxxxxx\n"
-        "\n"
         "  maws ec2 terminate --dry-run --confirm TERMINATE i-xxxxxxxxxxxxxxxxx\n"
-        "\n"
         "  maws ec2 terminate --confirm TERMINATE --wait i-xxxxxxxxxxxxxxxxx\n"
+        "  maws costs mtd\n"
+        "  maws costs daily --days 14\n"
+        "  maws costs by-service --days 30\n"
         "\n"
         "Tip: set these once per shell session (or in ~/.bashrc):\n"
-        "\n"
         "  export AWS_PROFILE=pcs\n"
         "  export AWS_DEFAULT_REGION=eu-west-2\n"
     ),
@@ -249,3 +250,70 @@ def ec2_terminate(ctx: Ctx, instance_ids: Sequence[str], dry_run: bool, skip_dot
     trows = [[iid, state] for (iid, state) in term_results]
     click.echo(_format_table(trows, headers=["InstanceId", "Result"]))
     click.echo("\nDone.")
+
+
+@cli.group()
+def costs():
+    """Spend/cost tools (Cost Explorer; not real-time)."""
+
+
+@costs.command("mtd")
+@click.option(
+    "--metric",
+    default="UnblendedCost",
+    show_default=True,
+    help="Cost metric (e.g. UnblendedCost, AmortizedCost, NetUnblendedCost).",
+)
+@click.pass_obj
+def costs_mtd(ctx: Ctx, metric: str):
+    try:
+        amt, unit, start, end = costs_month_to_date_total(
+            profile=ctx.profile, region=ctx.region, metric=metric
+        )
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    click.echo(f"Month-to-date ({start} .. {end} excl): {amt:.2f} {unit}")
+
+
+@costs.command("daily")
+@click.option("--days", type=int, default=14, show_default=True, help="Number of days (including today).")
+@click.option(
+    "--metric",
+    default="UnblendedCost",
+    show_default=True,
+    help="Cost metric (e.g. UnblendedCost, AmortizedCost, NetUnblendedCost).",
+)
+@click.pass_obj
+def costs_daily_cmd(ctx: Ctx, days: int, metric: str):
+    try:
+        items = costs_daily(profile=ctx.profile, region=ctx.region, days=days, metric=metric)
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    rows = [[c.day, f"{c.amount:.2f}", c.unit] for c in items]
+    click.echo(_format_table(rows, headers=["Day", "Amount", "Unit"]))
+    click.echo(f"\nFound {len(items)} day(s).")
+
+
+@costs.command("by-service")
+@click.option("--days", type=int, default=30, show_default=True, help="Number of days (including today).")
+@click.option(
+    "--metric",
+    default="UnblendedCost",
+    show_default=True,
+    help="Cost metric (e.g. UnblendedCost, AmortizedCost, NetUnblendedCost).",
+)
+@click.pass_obj
+def costs_by_service_cmd(ctx: Ctx, days: int, metric: str):
+    try:
+        items = costs_by_service(profile=ctx.profile, region=ctx.region, days=days, metric=metric)
+    except RuntimeError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(2)
+
+    rows = [[c.service, f"{c.amount:.2f}", c.unit] for c in items]
+    click.echo(_format_table(rows, headers=["Service", "Amount", "Unit"]))
+    click.echo(f"\nFound {len(items)} service(s).")
