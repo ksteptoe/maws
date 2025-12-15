@@ -11,6 +11,7 @@
 .ONESHELL:
 SHELL := $(shell which bash)
 .SHELLFLAGS := -eu -o pipefail -c
+.DEFAULT_GOAL := help
 
 # ---- Python / venv ----------------------------------------------------------
 VENV ?= .venv
